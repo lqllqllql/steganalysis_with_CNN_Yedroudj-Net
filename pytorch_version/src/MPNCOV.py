@@ -11,9 +11,12 @@ import torch
 import numpy as np
 from torch.autograd import Function
 
+# 全局协方差池化
 class Covpool(Function):
      @staticmethod
+     # 前向传播
      def forward(ctx, input):
+         # 图像输入形状预处理
          x = input
          batchSize = x.data.shape[0]
          dim = x.data.shape[1]
@@ -21,12 +24,15 @@ class Covpool(Function):
          w = x.data.shape[3]
          M = h*w
          x = x.reshape(batchSize,dim,M)
+         #滤波器吗？？
          I_hat = (-1./M/M)*torch.ones(M,M,device = x.device) + (1./M)*torch.eye(M,M,device = x.device)
          I_hat = I_hat.view(1,M,M).repeat(batchSize,1,1).type(x.dtype)
          y = x.bmm(I_hat).bmm(x.transpose(1,2))
          ctx.save_for_backward(input,I_hat)
          return y
+     
      @staticmethod
+     # 反向传播
      def backward(ctx, grad_output):
          input,I_hat = ctx.saved_tensors
          x = input
@@ -69,6 +75,7 @@ class Sqrtm(Function):
          ctx.save_for_backward(input, A, ZY, normA, Y, Z)
          ctx.iterN = iterN
          return y
+     
      @staticmethod
      def backward(ctx, grad_output):
          input, A, ZY, normA, Y, Z = ctx.saved_tensors
