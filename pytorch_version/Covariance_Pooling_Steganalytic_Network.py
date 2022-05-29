@@ -4,18 +4,30 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
+# 调用opencv需要导入cv2库
+# opencv是一个基于BSD许可发行的跨平台计算机视觉库
+# ----由一系列c函数和少量C++类构成，提供python Ruby Matlab等语言接口，实现图像处理和计算机视觉方面的很多通用算法
 import cv2
+# pathlib面向对象的文件系统路径
+# ----使得路径能在不同的操作平台上适用
+# ----https://zhuanlan.zhihu.com/p/139783331
 from pathlib import Path
+# 导入拷贝库
 import copy
+# 日志处理库
+# ----一种可以追踪某些软件运行时所发生事件的方法。
 import logging
 import random
+# scipy.io处理mat数据
 import scipy.io as sio
 import matplotlib.pyplot as plt
 import time
+# 文件操作相关模块，可以查找符合目的的文件。
 from glob import glob
 
 import torch
 import torch.nn as nn
+# optim库包含多种优化算法的包，提供丰富的接口进行优化算法的调用。
 import torch.optim as optim
 from torch.utils.data.dataset import Dataset
 from torch.utils.data import DataLoader
@@ -27,6 +39,7 @@ from srm_filter_kernel import all_normalized_hpf_list
 # Global covariance pooling
 from MPNCOV import *  # MPNCOV
 
+# ？？这个路径放的是什么
 cover_dir = '/home/ahmed/Documents/suniward0.4/base/TRN/'
 
 IMAGE_SIZE = 256
@@ -45,48 +58,57 @@ OUTPUT_PATH = Path(__file__).stem
 
 
 # Truncation operation
+# Truncation函数作为激活函数
 class TLU(nn.Module):
     def __init__(self, threshold):
         super(TLU, self).__init__()
-
         self.threshold = threshold
 
     def forward(self, input):
+        # .clamp():参数为最大最小threshold
+        # 将input限制在[min,max]区间中
         output = torch.clamp(input, min=-self.threshold, max=self.threshold)
-
         return output
 
 
 # Pre-processing Module
+# 预处理模块，高通滤波器层
 class HPF(nn.Module):
     def __init__(self):
         super(HPF, self).__init__()
 
         # Load 30 SRM Filters
+        # 卷积核大小设置为5*5
         all_hpf_list_5x5 = []
 
         for hpf_item in all_normalized_hpf_list:
+            # 如果第一个参数等于3[滤波器数量吗]，使用.pad进行填充【填充成5*5的卷积核】
             if hpf_item.shape[0] == 3:
+                # constant是边缘式填充模式
                 hpf_item = np.pad(hpf_item, pad_width=((1, 1), (1, 1)), mode='constant')
 
             all_hpf_list_5x5.append(hpf_item)
 
+        # hpf_weight:滤波器的权重；
+        # view(30,1,5,5):30个滤波器，每个滤波大小为5*5；
         hpf_weight = nn.Parameter(torch.Tensor(all_hpf_list_5x5).view(30, 1, 5, 5), requires_grad=False)
 
+        # 滤波器：30个滤波器，每个滤波大小为5*5，填充为2
         self.hpf = nn.Conv2d(1, 30, kernel_size=5, padding=2, bias=False)
         self.hpf.weight = hpf_weight
 
         # Truncation, threshold = 3
         self.tlu = TLU(3.0)
-
+    
+    # 前向传播
     def forward(self, input):
-
         output = self.hpf(input)
         output = self.tlu(output)
-
         return output
 
-
+# 整体框架
+# 第一层：30个滤波的卷积，大小5*5，步幅为1，填充2
+# ......
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
@@ -150,6 +172,7 @@ class Net(nn.Module):
 
         self.fc1 = nn.Linear(int(256 * (256 + 1) / 2), 2)
 
+    # 前向传播
     def forward(self, input):
         output = input
 
@@ -169,7 +192,7 @@ class Net(nn.Module):
 
         return output
 
-
+# 平均池化层
 class AverageMeter(object):
     def __init__(self):
         self.reset()
@@ -186,7 +209,7 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
-
+# 训练模型
 def train(model, device, train_loader, optimizer, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
