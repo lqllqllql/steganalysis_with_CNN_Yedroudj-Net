@@ -31,8 +31,10 @@ from MPNCOV import *  # MPNCOV
 
 IMAGE_SIZE = 256
 BATCH_SIZE = 32 // 2
+# 多了两行
 num_levels = 3
 EPOCHS = 400
+
 LR = 0.005
 
 WEIGHT_DECAY = 5e-4
@@ -43,12 +45,11 @@ DECAY_EPOCH = [50, 150, 250]
 
 OUTPUT_PATH = Path(__file__).stem
 
-
 # Truncation operation
+# 激活函数
 class TLU(nn.Module):
     def __init__(self, threshold):
         super(TLU, self).__init__()
-
         self.threshold = threshold
 
     def forward(self, input):
@@ -61,11 +62,11 @@ class TLU(nn.Module):
 class SPPLayer(nn.Module):
     def __init__(self, num_levels):
         super(SPPLayer, self).__init__()
-
         self.num_levels = num_levels
 
     def forward(self, x):
         bs, c, h, w = x.size()
+	# 池化层
         pooling_layers = []
         for i in range(self.num_levels):
             kernel_size = h // (2 ** i)
