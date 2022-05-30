@@ -21,6 +21,7 @@ import random
 # scipy.io处理mat数据
 import scipy.io as sio
 import matplotlib.pyplot as plt
+# 导入时间模块
 import time
 # 文件操作相关模块，可以查找符合目的的文件。
 from glob import glob
@@ -58,7 +59,7 @@ OUTPUT_PATH = Path(__file__).stem
 
 
 # Truncation operation
-# Truncation函数作为激活函数
+# Truncation函数作为激活函数,防止更深层的数值扩大
 class TLU(nn.Module):
     def __init__(self, threshold):
         super(TLU, self).__init__()
@@ -72,7 +73,7 @@ class TLU(nn.Module):
 
 
 # Pre-processing Module
-# 预处理模块，高通滤波器层
+# 预处理模块，高通滤波器层，提取噪声分量的残差
 class HPF(nn.Module):
     def __init__(self):
         super(HPF, self).__init__()
@@ -91,6 +92,7 @@ class HPF(nn.Module):
 
         # hpf_weight:滤波器的权重；
         # view(30,1,5,5):30个滤波器，每个滤波大小为5*5；
+        # ----所有核的大小被设置为5*5（加权矩阵）
         hpf_weight = nn.Parameter(torch.Tensor(all_hpf_list_5x5).view(30, 1, 5, 5), requires_grad=False)
 
         # 滤波器：30个滤波器，每个滤波大小为5*5，填充为2
@@ -98,6 +100,7 @@ class HPF(nn.Module):
         self.hpf.weight = hpf_weight
 
         # Truncation, threshold = 3
+        # 激活函数的
         self.tlu = TLU(3.0)
     
     # 前向传播
@@ -192,8 +195,22 @@ class Net(nn.Module):
 
         return output
 
-# 平均池化层
+# BN:将每个特征分布归一化为零均值和单位方差，最终缩放和转换分布
+# ----使得训练对初始参数不敏感，允许更大的学习率进行加速学习，提高检测精度
 class AverageMeter(object):
+    """computes（计算） and stores（存储） the average and current value.
+     
+     Examples::
+        >>> # Initialize a meter to record loss
+        >>> losses = AverageMeter()
+        >>> # Update meter after every minibatch update
+        >>> losses.update(loss_value, batch_size)
+        
+        输入两个参数：loss_value:处理的数值；
+                     batch_size：批次，即每个batch_size更新一次；
+        本质时对所有batch_size的损失取平均。
+
+    """
     def __init__(self):
         self.reset()
 
@@ -202,52 +219,72 @@ class AverageMeter(object):
         self.avg = 0
         self.sum = 0
         self.count = 0
-
+    # 更新
     def update(self, val, n=1):
         self.val = val
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+        
+# 实例化Net的原因
+# ----取平均，当test的batch_size过小，会被BN层导致生曾图片颜色失真过大；
+# ----该函数在模型测试阶段使用；
+# model=Net()
+# ----https://cloud.tencent.com/developer/article/1819853
 
 # 训练模型
+# 论文信息：将所有512*512图像进行重新采样为256*256图像作为模型的输入
 def train(model, device, train_loader, optimizer, epoch):
+    # 取平均
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
 
     model.train()
-
+    # 计算程序运行时间
     end = time.time()
-
+    
+    # pytorch中的数据加载：下载训练集
     for i, sample in enumerate(train_loader):
-
         data_time.update(time.time() - end)
-
+        # sample是图像吗？
         data, label = sample['data'], sample['label']
 
+        # 数据大小：以列表的形式展示
+        # data是一个256*256的图像像素的向量
+        # ---将图像像素转换为list形式
         shape = list(data.size())
+        # shape[0]：读取list的第一个维度的值?
+        # ---shape[0] * shape[1]行，*shape[2:]列
         data = data.reshape(shape[0] * shape[1], *shape[2:])
+        # 转换成一维数组；数据标签展平（图片转换成一维行向量）
         label = label.reshape(-1)
-
         data, label = data.to(device), label.to(device)
-
+        
+        # 论文提到使用小批量随机梯度下降（SGD）对CNN进行训练【动量=0.95；权重衰减=0.0001】
+        # zero_grad()函数:将模型的参数梯度初始化为0
+        # ----【一个batch的loss关于weight的导数是所有sample的loss关于weight的导数的累加和】
+        # backward()函数计算，当网络参量进行反馈时，梯度时累积计算而不是被替换，但在处理每一个batch时
+        # ---并不需要与其他batch的梯度混合累积计算，因此需要对每个batch使用zero_grad()将参数梯度置为0；
         optimizer.zero_grad()
-
+        # 使用cpu或gpu的时间
         end = time.time()
-
+        # 前向传播计算预测值
         output = model(data)  # FP
-
+        # 使用交叉熵损失函数求loss
         criterion = nn.CrossEntropyLoss()
         loss = criterion(output, label)
-
+        # item():返回loss的数值
         losses.update(loss.item(), data.size(0))
-
+        # 反向传播计算梯度
         loss.backward()  # BP
+        # 更新所有参数
         optimizer.step()
 
         batch_time.update(time.time() - end)  # BATCH TIME = BATCH BP+FP
         end = time.time()
-
+        
+        # train_print_frequency
         if i % TRAIN_PRINT_FREQUENCY == 0:
             logging.info('Epoch: [{0}][{1}/{2}]\t'
                          'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -259,41 +296,59 @@ def train(model, device, train_loader, optimizer, epoch):
 
 # Adjust BN estimated value
 def adjust_bn_stats(model, device, train_loader):
+    # model.train():让model编程训练模式，启用dropout和BN，在训练中能防止网络过拟合问题；
+    # ----模型中有BN和dropout训练时需要添加；
+    # ----保证BN层能够用到每一批数据的均值和方差；
+    # ----dropout:model.train()随机取一部分网络连接来训练更新参数
     model.train()
-
+    # with:对资源进行访问；确保不管使用过程中是否发证异常都会执行必要的“清理”操作，释放资源
+    # -----如文件使用后自动关闭\线程中锁的自动获取和释放等
+    
+    # tensor中的一个参数requires_grad参数：
+    # ----1）True：反向传播时，tensor会自动求导（即计算梯度）
+    # ----2) False:默认设置；反向传播时不会自动求导，能大大节约显存或内存
+    # with torch.no_grad():在此模块下，所有计算出的tensor的requires_grad都设置为False
+    # ----即所有tensor不会自动求导
     with torch.no_grad():
         for sample in train_loader:
             data, label = sample['data'], sample['label']
-
             shape = list(data.size())
             data = data.reshape(shape[0] * shape[1], *shape[2:])
             label = label.reshape(-1)
-
             data, label = data.to(device), label.to(device)
-
+            # 前向传播中计算预测值
             output = model(data)
 
-
+# 模型的评价体系：
 def evaluate(model, device, eval_loader, epoch, optimizer, best_acc, PARAMS_PATH):
+    # model.eval()：pytorch中会自动把BN和DropOut固定住不取平均（即不启用），而使用训练好的值；
+    # ----保证BN层能够用全部训练数据的均值和方差，保持测试过程中BN层的均值和方差不变；
+    # ----dropout：model.eval()利用了所有网络连接，不进行随机舍弃神经元
     model.eval()
 
+    # 初始化
     test_loss = 0.0
     correct = 0.0
 
     with torch.no_grad():
         for sample in eval_loader:
             data, label = sample['data'], sample['label']
-
             shape = list(data.size())
             data = data.reshape(shape[0] * shape[1], *shape[2:])
             label = label.reshape(-1)
-
+            # data=data.to(device) :将所有读取的数据data（Tensor变量）copy一份到device所指定的GPU上，之后的运算都在GPU上运行
             data, label = data.to(device), label.to(device)
 
+            # 计算前向传播过程的预测值
             output = model(data)
+            # 按维度返回最大值【1：每一行的最大值；0：每一列的最大值】，keepdim=True判断该维度是否存在
+            # ---output.max()[1]:只返回最大值的每个索引；
+            # ---输出预测值最大的索引：计算正确率只需要知道样本个数即可
             pred = output.max(1, keepdim=True)[1]
+            # 计算预测正确样本个数
             correct += pred.eq(label.view_as(pred)).sum().item()
 
+    # 计算准确率
     accuracy = correct / (len(eval_loader.dataset) * 2)
 
     if accuracy > best_acc and epoch > 180:
@@ -305,6 +360,7 @@ def evaluate(model, device, eval_loader, epoch, optimizer, best_acc, PARAMS_PATH
         }
         torch.save(all_state, PARAMS_PATH)
 
+    # 打印
     logging.info('-' * 8)
     logging.info('Eval accuracy: {:.4f}'.format(accuracy))
     logging.info('Best accuracy:{:.4f}'.format(best_acc))
@@ -313,31 +369,60 @@ def evaluate(model, device, eval_loader, epoch, optimizer, best_acc, PARAMS_PATH
 
 
 # Initialization
+# 初始化:如何进行初始化权重
 def initWeights(module):
+    # 如果是卷积层
     if type(module) == nn.Conv2d:
         if module.weight.requires_grad:
+            # kaiming有正态分布和均匀分布两种：输入输出方差一致性角度考虑
+            # torch.nn.init.kaiming_uniform_(tensor, a=0, mode='fan_in', nonlinearity='leaky_relu')
+            # tensor符合正态分布或均匀分布
+            # ----tensor:n维的tensor
+            # ----a=0:此层后使用的rectifier的负斜率
+            # ----mode:
+            #     ----fan_in:保留前向传播中权重方差大小；【正向传播时，方差一致】
+            #     ----fan_out:保留反向传播中权重方差大小；【反向传播时，方差一致】
+            # ----nonlinerity:非线性激活函数：默认是leaky_relu
             nn.init.kaiming_normal_(module.weight.data, mode='fan_in', nonlinearity='relu')
 
+    # 如果是全连接层
     if type(module) == nn.Linear:
+        # torch.nn.init.normal_(tensor, mean=0.0, std=1.0)
+        # tensor符合正态分布
+        # ----tensor:n维的tensor;
+        # ----mean=0:正态分布的均值
+        # ----std=1:正态分布的标准差
         nn.init.normal_(module.weight.data, mean=0, std=0.01)
+        # torch.nn.init.constant_(tensor, val)
         nn.init.constant_(module.bias.data, val=0)
 
 
 # Data augmentation
+# 数据扩充
 class AugData():
     def __call__(self, sample):
         data, label = sample['data'], sample['label']
 
         # Rotation
+        # random.randint():返回参数1和参数2之间的任意整数
         rot = random.randint(0, 3)
+        # np.rot90(m,k=1,axes=(0,1))
+        # ----在轴指定的平面中将array旋转90度
+        # ----m:二维数组
+        # ----k:阵列旋转90度的次数。此处是rot随机旋转rot次
+        # ----axes:从1轴转到2轴
+        # .cpy()：旋转后的数据复制一份
         data = np.rot90(data, rot, axes=[1, 2]).copy()
 
         # Mirroring
+        # random.random:随机生成一个（0，1）范围内的实数；
         if random.random() < 0.5:
+            # np.flip(m,axis=None)
+            # ---将m在axis维进行切片，并把这个维度的元素进行颠倒
             data = np.flip(data, axis=2).copy()
 
+        # 新增加的数据及标签
         new_sample = {'data': data, 'label': label}
-
         return new_sample
 
 
@@ -345,6 +430,9 @@ class ToTensor():
     def __call__(self, sample):
         data, label = sample['data'], sample['label']
 
+        # np.expand_dims(a,axis)
+        # 插入一个新轴
+        # ----axis=1:在列方向上，将数据升维：一维转换成二维
         data = np.expand_dims(data, axis=1)
         data = data.astype(np.float32)
         # data = data / 255.0
@@ -356,18 +444,20 @@ class ToTensor():
 
         return new_sample
 
-
+# 数据集
 class MyDataset(Dataset):
     def __init__(self, DATASET_DIR, partition, transform=None):
+        # 设置随机种子，方便复现结果
         random.seed(1234)
 
         self.transform = transform
-
         self.cover_dir = DATASET_DIR + '/cover'
         self.stego_dir = DATASET_DIR + '/stego/' + Model_NAME
 
-        self.covers_list = [x.split('/')[-1] for x in glob(self.cover_dir + '/*')]
+        self.covers_list = [x.split('/')[-1] for x in glob(self.cover_dir + '/*')]、
+        # 随机打乱
         random.shuffle(self.covers_list)
+        # 5000张随机选4000张进行训练，剩余1000张作为验证集
         if (partition == 0):
             self.cover_list = self.covers_list[:4000]
         if (partition == 1):
@@ -417,9 +507,7 @@ def setLogger(log_path, mode='a'):
 
 def main(args):
     statePath = args.statePath
-
     device = torch.device("cuda")
-
     kwargs = {'num_workers': 1, 'pin_memory': True}
 
     train_transform = transforms.Compose([
