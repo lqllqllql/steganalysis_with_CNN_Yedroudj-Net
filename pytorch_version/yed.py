@@ -31,22 +31,29 @@ from MPNCOV import *  # MPNCOV
 
 IMAGE_SIZE = 256
 BATCH_SIZE = 32 // 2
-# 多了两行
+# 多了一行，这个是啥
+# 滤波器的卷积核大小吗
 num_levels = 3
+
 EPOCHS = 400
-
 LR = 0.005
-
 WEIGHT_DECAY = 5e-4
 
 TRAIN_PRINT_FREQUENCY = 100
 EVAL_PRINT_FREQUENCY = 1
 DECAY_EPOCH = [50, 150, 250]
 
+# https://docs.python.org/3/library/pathlib.html
+# .stem：文件名不带后缀
+# path = Path(__file__)
+# path.suffix　　　　#文件后缀
+# path.stem　　　　　#文件名不带后缀
+# path.name　　　　　#带后缀的完整文件名
+# path.parent　　　　#路径的上级目录
 OUTPUT_PATH = Path(__file__).stem
 
 # Truncation operation
-# 激活函数
+# 激活函数:threshold:函数阈值
 class TLU(nn.Module):
     def __init__(self, threshold):
         super(TLU, self).__init__()
@@ -54,7 +61,6 @@ class TLU(nn.Module):
 
     def forward(self, input):
         output = torch.clamp(input, min=-self.threshold, max=self.threshold)
-
         return output
 
 
@@ -62,6 +68,7 @@ class TLU(nn.Module):
 class SPPLayer(nn.Module):
     def __init__(self, num_levels):
         super(SPPLayer, self).__init__()
+	# num_levels=3
         self.num_levels = num_levels
 
     def forward(self, x):
@@ -69,20 +76,23 @@ class SPPLayer(nn.Module):
 	# 池化层
         pooling_layers = []
         for i in range(self.num_levels):
+	    # 卷积核大小
             kernel_size = h // (2 ** i)
-
             tensor = F.avg_pool2d(x, kernel_size=kernel_size,
                                   stride=kernel_size).view(bs, -1)
             pooling_layers.append(tensor)
+	# torch.cat:连接给定维度dim中给定的张量序列【所有张量必须具有相同的形状】
+	# ----dim=1:行与行之间连接
         x = torch.cat(pooling_layers, dim=-1)
         return x
 
 
 # absult value operation
+# 绝对值层：使得统计模型考虑噪声残差的对称性
 class ABS(nn.Module):
     def __init__(self):
         super(ABS, self).__init__()
-
+    # 前向传播过程中abs
     def forward(self, input):
         output = torch.abs(input)
         return output
@@ -94,26 +104,25 @@ class ADD(nn.Module):
         super(ADD, self).__init__()
 
     def forward(self, input1, input2):
+	# torch.add:对输入进行缩放处理：input2的基础上加上input1 
         output = torch.add(input1, input2)
         return output
 
 
 # Pre-processing Module
+# 预处理模型：即高通道滤波
 class HPF(nn.Module):
     def __init__(self):
         super(HPF, self).__init__()
-
         # Load 30 SRM Filters
         all_hpf_list_5x5 = []
 
         for hpf_item in all_normalized_hpf_list:
             if hpf_item.shape[0] == 3:
                 hpf_item = np.pad(hpf_item, pad_width=((1, 1), (1, 1)), mode='constant')
-
             all_hpf_list_5x5.append(hpf_item)
 
         hpf_weight = nn.Parameter(torch.Tensor(all_hpf_list_5x5).view(30, 1, 5, 5), requires_grad=False)
-
         self.hpf = nn.Conv2d(1, 30, kernel_size=5, padding=2, bias=False)
         self.hpf.weight = hpf_weight
 
@@ -121,10 +130,8 @@ class HPF(nn.Module):
         self.tlu = TLU(3.0)
 
     def forward(self, input):
-
         output = self.hpf(input)
         output = self.tlu(output)
-
         return output
 
 
@@ -138,12 +145,9 @@ class Net(nn.Module):
     self.abs = ABS
     self.conv2_2 = torch.nn.Conv2d(in_channels=60, out_channels=30, kernel_size=1, stride=1, padding=0)
     self.bn2 = nn.BatchNorm2d(30)
-
     self.conv3_1 = torch.nn.Conv2d(in_channels=30, out_channels=60, kernel_size=3, stride=1, groups=30, padding=1) # Sepconv Block 2 Layer 3
-
     self.conv3_2 = torch.nn.Conv2d(in_channels=60, out_channels=30, kernel_size=1, stride=1, padding=0)
     self.bn3 = nn.BatchNorm2d(30)
-
     self.add = ADD
 
     self.group2 = nn.Sequential(
